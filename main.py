@@ -29,10 +29,15 @@ GITHUB_PAGES_BASE = f"https://{settings.GITHUB_USERNAME}.github.io"
 # --------------------------
 
 # LLM Configuration
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent"
+# GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent"
 # NOTE: API key is left empty (or read from environment) as per instructions; 
 # the execution environment is assumed to handle the required authentication.
-GEMINI_API_KEY = settings.GEMINI_API_KEY 
+# GEMINI_API_KEY = settings.GEMINI_API_KEY
+
+AIPIPE_API_URL = "https://aipipe.org/openrouter/v1/chat/completions"
+AIPIPE_API_KEY = settings.GEMINI_API_KEY
+
+
 # Initialize the FastAPI application
 app = FastAPI(
     title="Automated Task Receiver & Processor",
@@ -254,110 +259,78 @@ async def save_generated_files_locally(task_id: str, files: dict) -> str:
 
 async def call_llm_for_code(prompt: str, task_id: str, image_parts: list) -> dict:
     """
-    Calls the Gemini API to generate the web application code and structured
-    metadata (README and LICENSE), now supporting image inputs.
-    The response is strictly validated against a JSON schema.
+    Calls AIPIPE OpenAI API to generate web application code
     """
-    print(f"--- [LLM_CALL] Attempting to generate code for Task: {task_id} using Gemini API ---")
-      # --- Improve vague user prompts automatically ---
-    normalized_prompt = prompt.lower().strip()
-
-    # If the user gave a vague short task like "create a captcha solver..."
-    # auto-extend it into a detailed instruction so Gemini knows what to do
-    if "captcha solver" in normalized_prompt and "responsive" not in normalized_prompt:
-        print("--- [LLM_CALL] Detected vague captcha solver prompt — auto-expanding ---")
-        prompt += (
-            "\n\n"
-            "Ensure the web app is a single, complete, fully responsive HTML file using Tailwind CSS. "
-            "It must fetch an image from the query parameter '?url=https://.../image.png', display it, "
-            "and perform OCR using Tesseract.js via CDN. "
-            "If the URL parameter is missing, use the attached sample image by default. "
-            "Show the recognized text and any errors clearly in the UI. "
-            "Return output strictly as a JSON object with keys: 'index.html', 'README.md', and 'LICENSE'."
-        )
-    # Define system instruction for the model (UNCHANGED)
-    system_prompt = (
-        "You are an expert full-stack engineer and technical writer. Your task is to generate "
-        "three files in a single structured JSON response: 'index.html', 'README.md', and 'LICENSE'. "
-        "The 'index.html' must be a single, complete, fully responsive HTML file using Tailwind CSS "
-        "for styling and must implement the requested application logic. The 'README.md' must be "
-        "professional. The 'LICENSE' must contain the full text of the MIT license."
-    )
+    print(f"--- [LLM_CALL] Attempting to generate code for Task: {task_id} using AIPIPE OpenAI ---")
     
-    # Define the JSON response structure (UNCHANGED)
-    response_schema = {
-        "type": "OBJECT",
-        "properties": {
-            "index.html": {"type": "STRING", "description": "The complete, single-file HTML content with inline CSS and JS, using Tailwind."},
-            "README.md": {"type": "STRING", "description": "The professional Markdown content for the project README."},
-            "LICENSE": {"type": "STRING", "description": "The full text of the MIT license."}
-        },
-        "required": ["index.html", "README.md", "LICENSE"]
+    # System prompt for code generation
+    system_prompt = """You are an expert full-stack engineer. Generate THREE files in JSON format:
+    {
+    "index.html": "Complete HTML file with embedded CSS/JS using Tailwind CSS",
+    "README.md": "Professional documentation", 
+    "LICENSE": "Full MIT license text"
     }
 
-    # --- CONSTRUCT THE CONTENTS FIELD ---
-    contents = []
-    
-    if image_parts:
-        # Combine image parts and the text prompt.
-        all_parts = image_parts + [
-            { "text": prompt } 
-        ]
-        contents.append({ "parts": all_parts })
-    else:
-        # If no images, use the original structure with only the text prompt
-        contents.append({ "parts": [{ "text": prompt }] })
+    Requirements:
+    - Single HTML file with embedded CSS/JS
+    - Use Tailwind CSS CDN
+    - MIT License in file
+    - Professional README
+    - Mobile responsive
+    - Return ONLY valid JSON"""
 
-    # Construct the final API payload
+    # Prepare messages
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Create a web application that: {prompt}"}
+    ]
+
+    # AIPIPE OpenAI payload
     payload = {
-        "contents": contents,  
-        "systemInstruction": { "parts": [{ "text": system_prompt }] },
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseSchema": response_schema
-        }
+        "model": "openai/gpt-4.1-nano",  # or "openai/gpt-4" if available
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 4000
     }
     
-    # Use exponential backoff for the API call 
+    headers = {
+        "Authorization": f"Bearer {AIPIPE_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    # Retry logic
     max_retries = 3
     base_delay = 1
     
     for attempt in range(max_retries):
         try:
-            # Construct the URL with the API key
-            url = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
             async with httpx.AsyncClient(timeout=60) as client:
                 response = await client.post(
-                    url, 
+                    AIPIPE_API_URL,
                     json=payload,
-                    headers={"Content-Type": "application/json"}
+                    headers=headers
                 )
-                response.raise_for_status() # Raises an exception for 4xx/5xx status codes
+                response.raise_for_status()
                 
-                # Parse the response to get the structured JSON text
                 result = response.json()
+                json_text = result['choices'][0]['message']['content']
                 
-                # Extract the generated JSON string from the result
-                json_text = result['candidates'][0]['content']['parts'][0]['text']
-                
-                # The LLM output is a JSON string, so we need to parse it into a Python dict
+                # Parse JSON response
                 generated_files = json.loads(json_text)
-                
+                # FIX: Ensure all values are strings, not dicts
+                for key in generated_files:
+                    if isinstance(generated_files[key], dict):
+                        generated_files[key] = generated_files[key].get('content', str(generated_files[key]))
                 print(f"--- [LLM_CALL] Successfully generated files on attempt {attempt + 1}. ---")
                 return generated_files
 
-        except httpx.HTTPStatusError as e:
-            print(f"--- [LLM_CALL] HTTP Error on attempt {attempt + 1}: {e}. ---")
-        except (httpx.RequestError, KeyError, json.JSONDecodeError) as e:
-            # Catches network errors, missing structure in the result, or invalid JSON output
-            print(f"--- [LLM_CALL] Processing Error on attempt {attempt + 1}: {e}. ---")
-        
-        if attempt < max_retries - 1:
-            delay = base_delay * (2 ** attempt)
-            print(f"--- [LLM_CALL] Retrying LLM call in {delay} seconds... ---")
-            await asyncio.sleep(delay)
+        except Exception as e:
+            print(f"--- [LLM_CALL] Error on attempt {attempt + 1}: {e} ---")
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"--- [LLM_CALL] Retrying in {delay} seconds... ---")
+                await asyncio.sleep(delay)
 
-    # If all retries fail, we raise an exception which is caught downstream
     print("--- [LLM_CALL] Failed to generate code after multiple retries. ---")
     raise Exception("LLM Code Generation Failure")
 
@@ -435,6 +408,10 @@ async def save_attachments_locally(task_dir: str, attachments: list) -> list:
             continue
 
         base64_data = match.group(1)
+        padding = len(base64_data) % 4
+        #### ADDED EXTRA
+        if padding:
+            base64_data += '=' * (4 - padding)
         file_path = os.path.join(task_dir, filename)
 
         try:

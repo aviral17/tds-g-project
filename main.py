@@ -367,6 +367,9 @@ async def call_llm_for_code(prompt: str, task_id: str, image_parts: list) -> dic
                 # Parse JSON
                 generated_files = json.loads(json_text)
                 print(f"✅ [DEBUG] Parsed JSON - File keys: {list(generated_files.keys())}")
+                print("===== LLM RESULT (full JSON, pretty) =====")
+                print(generated_files)
+                print("===== END LLM RESULT =====")
                 
                 # Extract content from nested dicts
                 for key in generated_files:
@@ -410,7 +413,7 @@ async def setup_local_repo(local_path: str, repo_name: str, repo_url_auth: str, 
                 response = await client.post(f"https://api.github.com/user/repos", json=payload, headers=headers)
                 
                 print(f"📥 [DEBUG] GitHub API Response Status: {response.status_code}")
-                print(f"📥 [DEBUG] GitHub API Response Text: {response.text}")
+                # print(f"📥 [DEBUG] GitHub API Response Text: {response.text}")
                 
                 response.raise_for_status()
                 

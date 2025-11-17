@@ -257,13 +257,14 @@ async def save_generated_files_locally(task_id: str, files: dict) -> str:
 
 # --- Helper Functions for External Services ---
 
+
+
 async def call_llm_for_code(prompt: str, task_id: str, image_parts: list) -> dict:
     """
     Calls AIPIPE OpenAI API to generate web application code
     """
     print(f"--- [LLM_CALL] Attempting to generate code for Task: {task_id} using AIPIPE OpenAI ---")
     
-    # System prompt for code generation
     system_prompt = """You are an expert full-stack engineer. Generate THREE files in JSON format:
     {
     "index.html": "Complete HTML file with embedded CSS/JS using Tailwind CSS",
@@ -279,15 +280,13 @@ async def call_llm_for_code(prompt: str, task_id: str, image_parts: list) -> dic
     - Mobile responsive
     - Return ONLY valid JSON"""
 
-    # Prepare messages
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"Create a web application that: {prompt}"}
     ]
 
-    # AIPIPE OpenAI payload
     payload = {
-        "model": "openai/gpt-4.1-nano",  # or "openai/gpt-4" if available
+        "model": "openai/gpt-4.1-nano",
         "messages": messages,
         "temperature": 0.7,
         "max_tokens": 4000
@@ -298,7 +297,6 @@ async def call_llm_for_code(prompt: str, task_id: str, image_parts: list) -> dic
         "Content-Type": "application/json"
     }
 
-    # Retry logic
     max_retries = 3
     base_delay = 1
     
@@ -310,29 +308,123 @@ async def call_llm_for_code(prompt: str, task_id: str, image_parts: list) -> dic
                     json=payload,
                     headers=headers
                 )
+                
+                print(f"📥 [DEBUG] Response Status Code: {response.status_code}")
+                
+                if not response.text:
+                    raise Exception("Empty response")
+                
                 response.raise_for_status()
                 
                 result = response.json()
-                json_text = result['choices'][0]['message']['content']
+                print(f"✅ [DEBUG] Successfully parsed response as JSON")
                 
-                # Parse JSON response
+                if 'choices' not in result:
+                    raise Exception("No 'choices' in response")
+                
+                # ✅ DIFFERENT APPROACH: Flatten and search for 'message' key
+                import json as json_module
+                result_str = json_module.dumps(result)
+                
+                # Find all dict objects with 'message' key
+                # by converting to string and looking for the pattern
+                
+                # Actually, let's use a recursive function to find content
+                def find_message_content(obj):
+                    """Recursively find 'message' dict with 'content' key"""
+                    if isinstance(obj, dict):
+                        # If this object has 'message' key with 'content', return it
+                        if 'message' in obj and isinstance(obj['message'], dict):
+                            if 'content' in obj['message']:
+                                return obj['message']['content']
+                        # Otherwise recurse into all values
+                        for value in obj.values():
+                            result = find_message_content(value)
+                            if result:
+                                return result
+                    elif isinstance(obj, list):
+                        # Recurse into all list items
+                        for item in obj:
+                            result = find_message_content(item)
+                            if result:
+                                return result
+                    return None
+                
+                json_text = find_message_content(result)
+                
+                if not json_text:
+                    print(f"❌ Could not find message content in response!")
+                    print(f"🔍 Response structure: {result_str[:500]}")
+                    raise Exception("No message content found")
+                
+                print(f"✅ [DEBUG] Found message content ({len(json_text)} chars)")
+                
+                # Strip markdown wrapper
+                if json_text.strip().startswith("```"):
+                    lines = json_text.strip().split('\n')
+                    json_text = '\n'.join(lines[1:-1]).strip()
+                
+                # Parse JSON
                 generated_files = json.loads(json_text)
-                # FIX: Ensure all values are strings, not dicts
+                print(f"✅ [DEBUG] Parsed JSON - File keys: {list(generated_files.keys())}")
+                
+                # Extract content from nested dicts
                 for key in generated_files:
-                    if isinstance(generated_files[key], dict):
-                        generated_files[key] = generated_files[key].get('content', str(generated_files[key]))
-                print(f"--- [LLM_CALL] Successfully generated files on attempt {attempt + 1}. ---")
+                    if isinstance(generated_files[key], dict) and 'content' in generated_files[key]:
+                        generated_files[key] = generated_files[key]['content']
+                    
+                    file_size = len(generated_files[key]) if isinstance(generated_files[key], str) else len(str(generated_files[key]))
+                    print(f"📄 File {key}: {file_size} chars")
+                
+                print(f"🎉 Successfully generated files!")
                 return generated_files
 
         except Exception as e:
-            print(f"--- [LLM_CALL] Error on attempt {attempt + 1}: {e} ---")
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                print(f"--- [LLM_CALL] Retrying in {delay} seconds... ---")
-                await asyncio.sleep(delay)
+            print(f"❌ Attempt {attempt + 1} failed: {e}")
 
-    print("--- [LLM_CALL] Failed to generate code after multiple retries. ---")
+        if attempt < max_retries - 1:
+            delay = base_delay * (2 ** attempt)
+            print(f"⏳ Retrying in {delay} seconds...")
+            await asyncio.sleep(delay)
+
     raise Exception("LLM Code Generation Failure")
+
+
+async def setup_local_repo(local_path: str, repo_name: str, repo_url_auth: str, repo_url_http: str, round_index: int) -> git.Repo:
+    """Handles creating the remote repo"""
+    
+    github_token = settings.GITHUB_TOKEN
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    async with httpx.AsyncClient(timeout=45) as client:
+        try:
+            if round_index == 1:
+                print(f"   -> R1: Creating remote repository '{repo_name}'...")
+                print(f"🔧 [DEBUG] GitHub API URL: https://api.github.com/user/repos")
+                print(f"🔧 [DEBUG] Token first 10 chars: {github_token[:10]}...")
+                
+                payload = {"name": repo_name, "private": False, "auto_init": True}
+                response = await client.post(f"https://api.github.com/user/repos", json=payload, headers=headers)
+                
+                print(f"📥 [DEBUG] GitHub API Response Status: {response.status_code}")
+                print(f"📥 [DEBUG] GitHub API Response Text: {response.text}")
+                
+                response.raise_for_status()
+                
+                repo = git.Repo.init(local_path)
+                repo.create_remote('origin', repo_url_auth)
+                print("   -> R1: Local git repository initialized.")
+            
+            return repo
+
+        except httpx.HTTPStatusError as e:
+            print(f"❌ [API ERROR] GitHub API failed: {e.response.status_code}")
+            print(f"❌ [API ERROR] Response: {e.response.text}")
+            raise Exception(f"GitHub API call failed: {e.response.status_code} - {e.response.text}")
+
 
 
 async def notify_evaluation_server(

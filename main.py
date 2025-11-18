@@ -535,31 +535,33 @@ async def generate_files_and_deploy(task_data: TaskRequest):
     The asynchronous background process that executes the main project workflow.
     It adapts the LLM prompt for multi-round tasks and fixes the cloning order.
     """
-    task_id = task_data.task
-    email = task_data.email         
-    round_index = task_data.round 
-    brief = task_data.brief
-    evaluation_url = task_data.evaluation_url
-    nonce = task_data.nonce
-    attachments = task_data.attachments
-    
-    
-    print(f"\n--- [PROCESS START] Starting background task for {task_id}, Round {round_index} ---")
-    
-    # Deployment configuration
-    repo_name = task_id.replace(' ', '-').lower()
-    github_username = settings.GITHUB_USERNAME
-    github_token = settings.GITHUB_TOKEN
-    repo_url_auth = f"https://{github_username}:{github_token}@github.com/{github_username}/{repo_name}.git"
-    repo_url_http = f"https://github.com/{github_username}/{repo_name}"
-    
     try:
+        print(f"\n🚀 [STARTUP] Background task starting for {task_data.task}...")
+        print(f"🚀 [STARTUP] Current working directory: {os.getcwd()}")
+        
+        task_id = task_data.task
+        email = task_data.email         
+        round_index = task_data.round 
+        brief = task_data.brief
+        evaluation_url = task_data.evaluation_url
+        nonce = task_data.nonce
+        attachments = task_data.attachments
+        
+        
+        print(f"\n--- [PROCESS START] Starting background task for {task_id}, Round {round_index} ---")
+        
+        # Deployment configuration
+        repo_name = task_id.replace(' ', '-').lower()
+        github_username = settings.GITHUB_USERNAME
+        github_token = settings.GITHUB_TOKEN
+        repo_url_auth = f"https://{github_username}:{github_token}@github.com/{github_username}/{repo_name}.git"
+        repo_url_http = f"https://github.com/{github_username}/{repo_name}"
+        
         # 0. Setup local directory
         base_dir = os.path.join(os.getcwd(), "generated_tasks")
         local_path = os.path.join(base_dir, task_id)
 
         # --- ROBUST CLEANUP LOGIC ---
-        # Crucial: Cleans up local directory before cloning or creating a new repo.
         if os.path.exists(local_path):
             print(f"--- [CLEANUP] Deleting existing local directory: {local_path} ---")
             
@@ -580,10 +582,8 @@ async def generate_files_and_deploy(task_data: TaskRequest):
         
         # Create the fresh, EMPTY directory (ready for clone or init)
         os.makedirs(local_path, exist_ok=True)
-        # --- END ROBUST CLEANUP ---
         
         # 1. SETUP REPO (Clone or Init)
-        # MUST run before any files are saved to local_path.
         print(f"--- [DEPLOYMENT] Setting up local Git repository for Round {round_index}... ---")
         repo = await setup_local_repo(
             local_path=local_path, 
@@ -598,13 +598,11 @@ async def generate_files_and_deploy(task_data: TaskRequest):
         attachment_list_for_llm_prompt = []
 
         for attachment in attachments:
-            # Check for image parts for LLM input
             if is_image_data_uri(attachment.url):
                 gemini_part = data_uri_to_gemini_part(attachment.url)
                 if gemini_part:
                     image_parts.append(gemini_part)
             
-            # List all attachment names for the prompt
             attachment_list_for_llm_prompt.append(attachment.name)
 
         print(f"--- [LLM_INPUT] Found {len(image_parts)} image(s) to pass to LLM. ---")
@@ -612,10 +610,7 @@ async def generate_files_and_deploy(task_data: TaskRequest):
         attachment_list_str = ", ".join(attachment_list_for_llm_prompt)
         
         # 3. AI Code Generation - Adapt Prompt for Round 2
-        
-        # --- MODIFICATION START: Adapting the LLM Prompt ---
         if round_index > 1:
-            # For Round 2+, tell the LLM it's modifying existing work
             llm_prompt = (
                 f"UPDATE INSTRUCTION (ROUND {round_index}): You must modify the existing project files "
                 f"(index.html, README.md, LICENSE) based on this new brief: '{brief}'. "
@@ -624,29 +619,23 @@ async def generate_files_and_deploy(task_data: TaskRequest):
                 "fully responsive HTML file using Tailwind CSS."
             )
         else:
-            # For Round 1, generate a new application
             llm_prompt = (
                 f"Generate a complete, single-file HTML web application to achieve the following: {brief}. "
                 "Ensure your code is fully responsive, and uses Tailwind CSS. "
                 "Provide the code for the main web app, a README.md, and an MIT LICENSE."
             )
         
-        # Add attachment context if files were provided, regardless of round.
         if attachment_list_str:
              llm_prompt += f"\nAdditional context: The following files are available in the project root: {attachment_list_str}. "
              llm_prompt += f"Ensure your code references these files correctly (if applicable)."
-        # --- MODIFICATION END ---
         
         # Call LLM
         generated_files = await call_llm_for_code(llm_prompt, task_id, image_parts)
         
         # 4. Save Generated Code Locally
-        # This overwrites the cloned files (index.html, README.md, LICENSE)
         await save_generated_files_locally(task_id, generated_files)
         
         # 5. Save Attachments Locally
-        # This adds attachments (like data.csv) to the local directory
-        # The attachment saving now happens *after* the clone/init, resolving the Round 2 error.
         await save_attachments_locally(local_path, attachments)
 
         # 6. COMMIT AND PUBLISH
@@ -678,9 +667,12 @@ async def generate_files_and_deploy(task_data: TaskRequest):
         )
 
     except Exception as e:
-        print(f"--- [CRITICAL FAILURE] Task {task_id} failed during processing: {e} ---")
+        print(f"💥 [FATAL ERROR] Background task crashed: {e}")
+        import traceback
+        print(f"💥 [TRACEBACK] {traceback.format_exc()}")
         
     print(f"--- [PROCESS END] Background task for {task_id} completed. ---")
+
 
 
 # --- FastAPI Endpoint ---

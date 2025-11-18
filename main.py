@@ -265,20 +265,20 @@ async def call_llm_for_code(prompt: str, task_id: str, image_parts: list) -> dic
     """
     print(f"--- [LLM_CALL] Attempting to generate code for Task: {task_id} using AIPIPE OpenAI ---")
     
-    system_prompt = """You are an expert full-stack engineer. Generate THREE files in JSON format:
-    {
-    "index.html": "Complete HTML file with embedded CSS/JS using Tailwind CSS",
-    "README.md": "Professional documentation", 
-    "LICENSE": "Full MIT license text"
-    }
+    system_prompt = """You are an expert full-stack engineer. Generate ALL requested files in JSON format.
+    For each task, create these files as separate keys in the JSON:
+    - "index.html": Complete HTML file with embedded CSS/JS using Tailwind CSS
+    - "README.md": Professional documentation
+    - "LICENSE": Full MIT license text
+    - ANY OTHER FILES requested in the user prompt (e.g., .txt, .json, .svg, .md files)
 
     Requirements:
-    - Single HTML file with embedded CSS/JS
+    - Single HTML file with embedded CSS/JS for index.html
     - Use Tailwind CSS CDN
     - MIT License in file
     - Professional README
     - Mobile responsive
-    - Return ONLY valid JSON"""
+    - Return ONLY valid JSON with ALL requested files"""
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -289,7 +289,7 @@ async def call_llm_for_code(prompt: str, task_id: str, image_parts: list) -> dic
         "model": "openai/gpt-4.1-nano",
         "messages": messages,
         "temperature": 0.7,
-        "max_tokens": 4000
+        "max_tokens": 16000
     }
     
     headers = {
@@ -297,7 +297,7 @@ async def call_llm_for_code(prompt: str, task_id: str, image_parts: list) -> dic
         "Content-Type": "application/json"
     }
 
-    max_retries = 3
+    max_retries = 5
     base_delay = 1
     
     for attempt in range(max_retries):

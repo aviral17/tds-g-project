@@ -243,6 +243,8 @@ async def save_generated_files_locally(task_id: str, files: dict) -> str:
     for filename, content in files.items():
         file_path = os.path.join(task_dir, filename)
         try:
+            if isinstance(content, dict):
+                content = json.dumps(content, indent=2, ensure_ascii=False)
             # Write the content to the file. Assuming content is a string (text files).
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
